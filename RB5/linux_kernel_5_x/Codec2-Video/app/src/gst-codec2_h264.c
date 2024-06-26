@@ -7,12 +7,13 @@
 #include <stdio.h>
 #include <errno.h>
 #include <gst/gst.h>
+#include <gst/app/gstappsink.h>
 #include <string.h>
 
 /* patterns */
-char inputfile[512] = "\0";
+char inputfile[512] = "";
 const char *encode_outputfile = "/data/output_encode.mp4";
-const char *decode_outputfile = "/data/output_decode.yuv";
+const char *decode_outputfile = "/run/mpa/vrx-encoded-frames";
 
 int error_handle(GstElement *pipeline);
 int gst_encode_yuv();
@@ -23,11 +24,7 @@ void Usage(void);
 
 void Usage (void) {
     g_print("Usage: \n");
-    g_print("./gst-codec2_h264 <OPERATION> <FILE>\n");
-    g_print("OPERATION: encode OR decode\n");
-    g_print("FILE: the absolute file path of inputfile + inputfile name\n");
-    g_print("   encode:\t encode <FILE> to h264 stream, and ouput to");
-    g_print("   decode:\t decode <FILE> to yuv raw data and output to");
+    g_print("./gst-codec2_h264 decode /run/mpa/vrx-encoded-frames\n");
     g_print("\n");
 
     return;
@@ -90,30 +87,96 @@ int gst_encode_yuv () {
     return 0;
 }
 
+
+static void on_new_sample(GstElement *sink, gpointer data) {
+    GstSample *sample;
+    GstBuffer *buffer;
+    GstMapInfo map;
+
+    /* Get the sample from appsink */
+    sample = gst_app_sink_pull_sample(GST_APP_SINK(sink));
+    if (sample) {
+        buffer = gst_sample_get_buffer(sample);
+        if (buffer) {
+            /* Map the buffer to get access to the raw data */
+            if (gst_buffer_map(buffer, &map, GST_MAP_READ)) {
+                /* Process the decompressed data */
+                fwrite(map.data, 1, map.size, stdout);  // Example: write raw data to stdout
+
+                /* Unmap the buffer */
+                gst_buffer_unmap(buffer, &map);
+            }
+        }
+
+        /* Free the sample */
+        gst_sample_unref(sample);
+    }
+}
+
 int gst_decode_file () {
     GstElement *pipeline, *source, *qtdemux, *queue, *h264parse, *qtic2vdec, *sink;
     GstStateChangeReturn ret;
 
     /* Create the element */
     source = gst_element_factory_make("filesrc", "InputFile");
+    if (!source) {
+        g_printerr("Not all elements could be created. filesrc\n");
+        return GST_STATE_NULL;
+    }
+
     qtdemux = gst_element_factory_make("qtdemux", "QtDemux");
+    if (!qtdemux) {
+        g_printerr("Not all elements could be created. qtdemux\n");
+        return GST_STATE_NULL;
+    }
+
     queue = gst_element_factory_make("queue", "Queue");
+    if (!queue) {
+        g_printerr("Not all elements could be created. queue\n");
+        return GST_STATE_NULL;
+    }
+
     h264parse = gst_element_factory_make("h264parse", "H264Parse");
+    if (!h264parse) {
+        g_printerr("Not all elements could be created. h264parse\n");
+        return GST_STATE_NULL;
+    }
+
     qtic2vdec = gst_element_factory_make("qtic2vdec", "QtiC2vdec");
-    sink = gst_element_factory_make("filesink", "OutputFile");
+    if (!qtic2vdec) {
+        g_printerr("Not all elements could be created. qtic2vdec\n");
+        return GST_STATE_NULL;
+    }
+
+    //sink = gst_element_factory_make("filesink", "OutputFile");
+    sink = gst_element_factory_make("appsink", "OutputFile");
+    if (!sink) {
+        g_printerr("Not all elements could be created. sink\n");
+        return GST_STATE_NULL;
+    }
 
     /* Create the empty pipeline */
     pipeline = gst_pipeline_new("decode-pipeline");
+    if (!pipeline) {
+        g_printerr("Not all elements could be created. pipeline\n");
+        return GST_STATE_NULL;
+    }
 
     if (!pipeline || !source || !qtdemux || !queue || !qtic2vdec || !h264parse || !sink) {
         g_printerr("Not all elements could be created.\n");
         return GST_STATE_NULL;
     }
 
+
+    /* ADDED: Configure the appsink element */
+    g_object_set(sink, "emit-signals", TRUE, "sync", FALSE, NULL);
+    g_signal_connect(sink, "new-sample", G_CALLBACK(on_new_sample), NULL);
+
+
     /* Modify element properties */
-    g_object_set(G_OBJECT(source), "location", inputfile, NULL);
+    //g_object_set(G_OBJECT(source), "location", inputfile, NULL);
     g_object_set(G_OBJECT(qtdemux), "name", "demux", NULL);
-    g_object_set(G_OBJECT(sink), "location", decode_outputfile, NULL);
+    //g_object_set(G_OBJECT(sink), "location", decode_outputfile, NULL);  
 
     /* Build the pipeline */
     gst_bin_add_many(GST_BIN(pipeline), source, qtdemux, queue, h264parse,
@@ -132,6 +195,9 @@ int gst_decode_file () {
     }
 
     g_signal_connect (qtdemux, "pad-added", (GCallback) qtdemux_pad_added_cb, queue);
+
+     /* Set the source file location */
+    g_object_set(source, "location", inputfile, NULL);
 
     /* Start playing */
     ret = gst_element_set_state(pipeline, GST_STATE_PLAYING);

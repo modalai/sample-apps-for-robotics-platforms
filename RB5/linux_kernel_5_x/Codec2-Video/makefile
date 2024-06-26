@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: BSD-3-Clause-Clear
 
 # compiler flags
-CFLAGS += $(shell pkg-config --cflags --libs gstreamer-1.0)
+CFLAGS += $(shell pkg-config --cflags --libs gstreamer-1.0 gstreamer-app-1.0)
 
 # compile
 gst-codec2_h264: app/src/gst-codec2_h264.c
